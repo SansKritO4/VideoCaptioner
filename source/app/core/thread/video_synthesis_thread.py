@@ -9,6 +9,7 @@ from ...common.config import cfg, mutSynthezing
 
 logger = setup_logger("video_synthesis_thread")
 
+
 class VideoSynthesisThread(QThread):
     finished = pyqtSignal(Task)
     progress = pyqtSignal(int, str)
@@ -26,7 +27,7 @@ class VideoSynthesisThread(QThread):
             logger.info("其他任务在进行视频合成，等待其完成")
             self.task.status = Task.Status.WAITINGSYNTHESIS
             self.progress.emit(5, self.tr("Waiting for synthesis"))
-            
+
         try:
             with QMutexLocker(mutSynthezing):
 
@@ -42,39 +43,60 @@ class VideoSynthesisThread(QThread):
                     subtitle_file = self.task.original_subtitle_save_path
                 else:
                     raise RuntimeError("No subtitle file available.")
-                
+
                 video_save_path = self.task.video_save_path
                 soft_subtitle = self.task.soft_subtitle
-                
-                if not self.task.need_video: # Shouldn't happen, just in case.
+
+                if not self.task.need_video:  # Shouldn't happen, just in case.
                     logger.info(f"不需要合成视频，跳过")
                     self.progress.emit(100, self.tr("合成完成"))
                     self.finished.emit(self.task)
                     mutSynthezing.unlock()
                     return
-                
+
                 logger.info(f"开始合成视频: {video_file}")
                 self.progress.emit(10, self.tr("正在合成"))
                 self.progress.emit(11, f"Soft subtitle:{soft_subtitle}")
+
+                # ---- 统一获取 video_info，保证是 VideoInfo 对象 ----
                 if not self.task.video_info:
-                    video_info = get_video_info(video_file)
-                    w = video_info["width"]
-                    h = video_info["height"]
-                    duration = int(video_info["duration_seconds"])
+                    raw_info = get_video_info(video_file)
+                    # get_video_info 返回 dict，这里转成 VideoInfo 对象
+                    if isinstance(raw_info, VideoInfo):
+                        video_info = raw_info
+                    else:
+                        video_info = VideoInfo(
+                            file_name=raw_info.get("file_name", ""),
+                            file_path=raw_info.get("file_path", ""),
+                            width=raw_info.get("width", 0),
+                            height=raw_info.get("height", 0),
+                            fps=raw_info.get("fps", 0),
+                            duration_seconds=raw_info.get("duration_seconds", 0),
+                            bitrate_kbps=raw_info.get("bitrate_kbps", 0),
+                            video_codec=raw_info.get("video_codec", ""),
+                            audio_codec=raw_info.get("audio_codec", ""),
+                            audio_sampling_rate=raw_info.get("audio_sampling_rate", 0),
+                            thumbnail_path=raw_info.get("thumbnail_path", ""),
+                            audio_tracks=raw_info.get("audio_tracks") or [],
+                            rotation=raw_info.get("rotation", 0),
+                        )
                     self.task.video_info = video_info
                 else:
-                    w = self.task.video_info.width
-                    h = self.task.video_info.height
-                    duration = int(self.task.video_info.duration_seconds)
-                
-                rotation = self.task.video_info["rotation"]
+                    video_info = self.task.video_info
+
+                # ---- 之后全部用属性访问 ----
+                w = video_info.width
+                h = video_info.height
+                duration = int(video_info.duration_seconds)
+                rotation = video_info.rotation
+
                 if rotation == 90 or rotation == 270:
                     # Rotated side way
                     temp = w
                     w = h
                     h = temp
 
-                if ( self.task.portrait and w > h ) or (not self.task.portrait and w < h):
+                if (self.task.portrait and w > h) or (not self.task.portrait and w < h):
                     # Need to convert lanscape <-> portrait
                     width = h
                     height = w
@@ -82,27 +104,28 @@ class VideoSynthesisThread(QThread):
                     # Keep the same mode
                     width = w
                     height = h
-                
-                add_subtitles(input_file=video_file,
-                            subtitle_file=subtitle_file,
-                            output=video_save_path,
-                            soft_subtitle=soft_subtitle,
-                            input_width=w,
-                            input_height=h,
-                            output_width=width,
-                            output_height=height,
-                            portrait=self.task.portrait,
-                            vertical_offset=self.task.subtitle_vertical_offset,
-                            logo=self.task.logo_picture,
-                            duration=duration,
-                            zoom_video=self.task.zoom_video,
-                            zoom_subtitle=self.task.zoom_subtitle,
-                            blur_background=cfg.blur_background.value,
-                            crf=cfg.encoder_quality.value,
-                            progress_callback=self.progress_callback,
-                            video_rotation=self.task.video_info["rotation"],
-                            allow_running=self.task.allow_running,
-                            )
+
+                add_subtitles(
+                    input_file=video_file,
+                    subtitle_file=subtitle_file,
+                    output=video_save_path,
+                    soft_subtitle=soft_subtitle,
+                    input_width=w,
+                    input_height=h,
+                    output_width=width,
+                    output_height=height,
+                    portrait=self.task.portrait,
+                    vertical_offset=self.task.subtitle_vertical_offset,
+                    logo=self.task.logo_picture,
+                    duration=duration,
+                    zoom_video=self.task.zoom_video,
+                    zoom_subtitle=self.task.zoom_subtitle,
+                    blur_background=cfg.blur_background.value,
+                    crf=cfg.encoder_quality.value,
+                    progress_callback=self.progress_callback,
+                    video_rotation=video_info.rotation,
+                    allow_running=self.task.allow_running,
+                )
                 self.progress.emit(100, self.tr("合成完成"))
                 logger.info(f"视频合成完成，保存路径: {video_save_path}")
                 self.finished.emit(self.task)
